@@ -64,7 +64,9 @@ class SeirModel:
                      x_initial=None,
                      objective_selector=0,
                      u_start_day=0,
-                     horizon=None):
+                     horizon=None,
+                     increasing_capacity=None,
+                     step=None):
         if u_profile:
             assert len(
                 u_profile) == self.horizon, 'input length vector is incorrect'
@@ -77,7 +79,6 @@ class SeirModel:
         h = MX.sym('h')
         u = MX.sym('u')
         v1 = MX.sym('v1')  # slack variable
-        # v2 = MX.sym('v2')  # slack variable
 
         # slack variable constraints
         # h - ht <= v1
@@ -104,7 +105,7 @@ class SeirModel:
         else:
             assert False, 'objective not found'
 
-        no_control_intervals = horizon if horizon else self.horizon  # daily input granularity
+        no_control_intervals = horizon if horizon else self.horizon
         integrator = self.integrator_func(self.horizon, no_control_intervals,
                                           x, x_dot, u, integral_objective)
 
@@ -127,6 +128,10 @@ class SeirModel:
         ubw += list(x_init[:-1]) + [inf]
         w0 += list(x_init)
 
+        capacity_count = 0
+        if increasing_capacity:
+            capacity_count = step if step else 0
+        ht_vec = []
         for k in range(no_control_intervals):
             # New NLP variable for the control
             Uk = MX.sym('U' + str(k))
@@ -167,11 +172,22 @@ class SeirModel:
 
             # Add slack variable constraints
             _h = Xk_end[4]
-            _ht = self.target * self.max_bed_capacity
+            # increasing capacity constraint
+            if increasing_capacity and k >= u_start_day:
+                _ht = self.target * self.max_bed_capacity + self.target * (
+                    (increasing_capacity[0] / self.N) -
+                    self.max_bed_capacity) * (capacity_count / increasing_capacity[1])
+                if _ht > self.target * increasing_capacity[0] / self.N:
+                    _ht = self.target * increasing_capacity[0] / self.N
+                capacity_count += 1
+            else:
+                _ht = self.target * self.max_bed_capacity
             _v1 = Xk_end[5]
             g.append((_h - _ht) - _v1)
             lbg += [-inf]
             ubg += [0]
+
+            ht_vec.append(_ht)
 
         # if provided with initial guess, use it
         if w_initial is not None:
@@ -197,7 +213,6 @@ class SeirModel:
         r_opt = w_opt[3::x_size + 1]
         h_opt = w_opt[4::x_size + 1]
         v1_opt = w_opt[5::x_size + 1]
-        # v2_opt = w_opt[6::x_size + 1]
         u_opt = w_opt[6::x_size + 1]
 
         result = {
@@ -209,12 +224,12 @@ class SeirModel:
             'h_opt': h_opt,
             'u_opt': u_opt,
             'v1_opt': v1_opt,
-            # 'v2_opt': v2_opt,
-            'w_opt': w_opt
+            'w_opt': w_opt,
+            'ht_vec': ht_vec
         }
         return result
 
-    def mpc(self, u_start_day=0):
+    def mpc(self, u_start_day=0, increasing_capacity=None):
         result = None
 
         s_vec = [self.x_initial[0]]
@@ -224,12 +239,17 @@ class SeirModel:
         h_vec = [self.x_initial[4]]
         u_vec = []
         u_actual_vec = []
+        ht_vec = []
         time = [0]
 
         for k in range(self.horizon):
             time.append(k + 1)
             x_initial = (s_vec[-1], e_vec[-1], i_vec[-1], r_vec[-1], h_vec[-1])
+            horizon = self.horizon - k
+            horizon = 30 if horizon <= 30 else horizon  # minimum 30 day look ahead
+
             if k < u_start_day:
+                ht_vec.append(self.target * self.max_bed_capacity)
                 u_vec.append(0.0)
                 u_actual = 0
                 u_actual_vec.append(u_actual)
@@ -237,8 +257,6 @@ class SeirModel:
                                                u=u_actual,
                                                x_initial=x_initial)
             else:
-                horizon = self.horizon - k
-                horizon = 30 if horizon <= 30 else horizon  # minimum 30 day look ahead
                 if result:
                     result = self.casadi_model(
                         u_fixed=False,
@@ -247,23 +265,27 @@ class SeirModel:
                         # w_initial=result['w_opt'],  # warm start optimisation
                         objective_selector=2,
                         u_start_day=0,
-                        horizon=horizon)
+                        horizon=horizon,
+                        increasing_capacity=increasing_capacity,
+                        step=k-u_start_day)
                 else:
                     result = self.casadi_model(u_fixed=False,
                                                u_profile=None,
                                                w_initial=None,
                                                objective_selector=2,
                                                u_start_day=0,
-                                               horizon=horizon)
-                    # plt.plot(result['time'][:-1], result['u_opt'])
-                    # plt.show()
+                                               horizon=horizon,
+                                               increasing_capacity=increasing_capacity,
+                                               step=k-u_start_day)
                 u_vec.append(result['u_opt'][0])
                 u_actual = result['u_opt'][0] - random.uniform(
-                    -0.1, 0.1) * result['u_opt'][0]
+                    0, 0.1) * self.u_max  # apply noise to u
                 u_actual_vec.append(u_actual)
                 s, e, i, r, h = self.integrate(t=(0, 1),
                                                u=u_actual,
                                                x_initial=x_initial)
+                ht_vec.append(result['ht_vec'][0])
+
             print('----------------------')
             print('STEP NUMBER:', k)
             print('SEIR:', s, e, i, r, h)
@@ -286,7 +308,8 @@ class SeirModel:
                 'r_opt': np.array(r_vec),
                 'h_opt': np.array(h_vec),
                 'u_opt': np.array(u_vec),
-                'u_actual': np.array(u_actual_vec)
+                'u_actual': np.array(u_actual_vec),
+                'ht_vec': np.array(ht_vec)
             }
         return data
 
@@ -332,8 +355,9 @@ class SeirModel:
                  self.N * result['h_opt'],
                  label='ICU beds required',
                  linewidth=2.0)
-        ax2.plot(result['time'],
-                 [self.N * self.max_bed_capacity] * len(result['time']),
+        ax2.plot(result['time'][:-1],
+                 self.N * 1/0.9 * np.array(result['ht_vec']),
+                 # [self.N * self.max_bed_capacity] * len(result['time']),
                  label='peak bed capacity',
                  color='black',
                  linewidth=2.0)
@@ -364,7 +388,7 @@ if __name__ == "__main__":
     horizon = 210
 
     # # OPEN LOOP (run with n=100)
-    # sm = SeirModel(horizon=horizon)
+    sm = SeirModel(horizon=horizon)
 
     # constant 40% social distancing
     # u_sd = [0.4] * int(horizon)
@@ -411,8 +435,8 @@ if __name__ == "__main__":
     #                          u_profile=None,
     #                          w_initial=None,
     #                          objective_selector=2,
-    #                          u_start_day=14)
-    # # plt.plot(result['v1_opt'])
+    #                          u_start_day=14,
+    #                          increasing_capacity=(50, 60))
     # fig = sm.plot_results(result)
     # fig.suptitle(
     #     'Open loop optimal social distancing effectiveness (u), with delayed start'
@@ -420,7 +444,17 @@ if __name__ == "__main__":
     # plt.show()
 
     # closed loop MPC
-    sm = SeirModel(horizon=horizon, n=100)
-    sim_result = sm.mpc(u_start_day=14)
-    sm.plot_results(sim_result)
+    # sm = SeirModel(horizon=horizon, n=100)
+    # sim_result = sm.mpc(u_start_day=14)
+    # fig = sm.plot_results(sim_result)
+    # fig.suptitle(
+    #     'MPC feedback control with fixed ICU peak bed capacity constraint'
+    # )
+
+    sm = SeirModel(horizon=210, n=100)
+    sim_result = sm.mpc(u_start_day=14, increasing_capacity=(50, 60))
+    fig = sm.plot_results(sim_result)
+    fig.suptitle(
+        'MPC feedback control with increasing ICU peak bed capacity constraint'
+    )
     plt.show()
