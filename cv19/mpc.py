@@ -40,10 +40,9 @@ class SeirModel:
         r_initial = 0.00
         s_initial = 1 - e_initial - i_initial - r_initial
         h_initial = self.icu_load * e_initial
-        v1_initial = 1
-        self.x_initial = s_initial, e_initial, i_initial, r_initial, h_initial, v1_initial
+        self.x_initial = s_initial, e_initial, i_initial, r_initial, h_initial
 
-    # SEIR model differential equations with noise applied to u and R0 (from Kantor).
+    # SEIR model differential equations with noise applied to u (from Kantor).
     def state_space(self, x, t, u):
         s, e, i, r, h = x
         dsdt = -(1 - u) * self.R0 * self.gamma * s * i
@@ -124,9 +123,9 @@ class SeirModel:
         # Formulate the NLP
         Xk = MX.sym('X0', x_size)
         w.append(Xk)
-        lbw += list(x_init[:-1]) + [0]
-        ubw += list(x_init[:-1]) + [inf]
-        w0 += list(x_init)
+        lbw += list(x_init) + [0]
+        ubw += list(x_init) + [inf]
+        w0 += list(x_init) + [1]
 
         capacity_count = 0
         if increasing_capacity:
@@ -163,7 +162,7 @@ class SeirModel:
             # slack variables
             lbw += [0]
             ubw += [inf]
-            w0 += list(self.x_initial)
+            w0 += list(x_initial) + [1]
 
             # Add equality constraints (state continuity)
             g.append(Xk_end[:-1] - Xk[:-1])
@@ -195,7 +194,6 @@ class SeirModel:
 
         # Create an NLP solver
         opts = {}
-        # opts['ipopt.acceptable_tol'] = 1e-3
         prob = {'f': objective, 'x': vertcat(*w), 'g': vertcat(*g)}
         solver = nlpsol('solver', 'ipopt', prob, opts)
 
@@ -263,6 +261,7 @@ class SeirModel:
                         u_profile=None,
                         w_initial=None,  # warm start optimisation
                         # w_initial=result['w_opt'],  # warm start optimisation
+                        x_initial=x_initial,
                         objective_selector=2,
                         u_start_day=0,
                         horizon=horizon,
@@ -272,14 +271,15 @@ class SeirModel:
                     result = self.casadi_model(u_fixed=False,
                                                u_profile=None,
                                                w_initial=None,
+                                               x_initial=x_initial,
                                                objective_selector=2,
                                                u_start_day=0,
                                                horizon=horizon,
                                                increasing_capacity=increasing_capacity,
                                                step=k-u_start_day)
                 u_vec.append(result['u_opt'][0])
-                u_actual = result['u_opt'][0] - random.uniform(
-                    0, 0.1) * self.u_max  # apply noise to u
+                u_actual = result['u_opt'][0] \
+                           - random.uniform(0, 0.1) * result['u_opt'][0]    # apply noise to u
                 u_actual_vec.append(u_actual)
                 s, e, i, r, h = self.integrate(t=(0, 1),
                                                u=u_actual,
@@ -444,17 +444,18 @@ if __name__ == "__main__":
     # plt.show()
 
     # closed loop MPC
-    # sm = SeirModel(horizon=horizon, n=100)
-    # sim_result = sm.mpc(u_start_day=14)
-    # fig = sm.plot_results(sim_result)
-    # fig.suptitle(
-    #     'MPC feedback control with fixed ICU peak bed capacity constraint'
-    # )
-
-    sm = SeirModel(horizon=210, n=100)
-    sim_result = sm.mpc(u_start_day=14, increasing_capacity=(50, 60))
+    sm = SeirModel(horizon=horizon, n=100)
+    sm.u_max = 0.4
+    sim_result = sm.mpc(u_start_day=14)
     fig = sm.plot_results(sim_result)
     fig.suptitle(
-        'MPC feedback control with increasing ICU peak bed capacity constraint'
+        'MPC feedback control with fixed ICU peak bed capacity constraint'
     )
+
+    # sm = SeirModel(horizon=horizon, n=100)
+    # sim_result = sm.mpc(u_start_day=7, increasing_capacity=(50, 60))
+    # fig = sm.plot_results(sim_result)
+    # fig.suptitle(
+    #     'MPC feedback control with increasing ICU peak bed capacity constraint'
+    # )
     plt.show()
