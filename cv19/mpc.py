@@ -30,9 +30,9 @@ class SeirModel:
 
         self.alpha = 1 / t_incubation
         self.gamma = 1 / t_infective
-        # self.beta = self.R0 * self.gamma
+        # self.beta = self.R0 * self.gamma  # we explicitly use R0 and gamma
 
-        self.u_max = 0.4
+        self.u_max = 0.4    # max bound on social distancing effectiveness
 
         # initial number of infected and recovered individuals
         e_initial = self.n / self.N
@@ -77,7 +77,7 @@ class SeirModel:
         r = MX.sym('r')
         h = MX.sym('h')
         u = MX.sym('u')
-        v1 = MX.sym('v1')  # slack variable
+        v1 = MX.sym('v1')  # slack variable (convert hard bed contraint into soft constraint)
 
         # slack variable constraints
         # h - ht <= v1
@@ -162,7 +162,7 @@ class SeirModel:
             # slack variables
             lbw += [0]
             ubw += [inf]
-            w0 += list(x_initial) + [1]
+            w0 += list(x_init) + [1]
 
             # Add equality constraints (state continuity)
             g.append(Xk_end[:-1] - Xk[:-1])
@@ -381,81 +381,3 @@ class SeirModel:
         ax2.set_ylabel('# per 100,000 popn')
         ax3.set_ylabel('social distancing, % effectiveness')
         return fig
-
-
-if __name__ == "__main__":
-
-    horizon = 210
-
-    # # OPEN LOOP (run with n=100)
-    sm = SeirModel(horizon=horizon)
-
-    # constant 40% social distancing
-    # u_sd = [0.4] * int(horizon)
-    # result = sm.casadi_model(u_fixed=True, u_profile=u_sd, w_initial=None, objective_selector=0)
-    # fig = sm.plot_results(result)
-    # fig.suptitle('Constant social distancing of 40%')
-    #
-    # # constant 0% social distancing
-    # w_initial = result['w_opt']
-    # u_sd = [0.0] * int(horizon)
-    # result = sm.casadi_model(u_fixed=True,
-    #                          u_profile=u_sd,
-    #                          w_initial=w_initial,
-    #                          objective_selector=0)
-    # fig = sm.plot_results(result)
-    # fig.suptitle('Constant social distancing of 0%')
-    #
-    # social distancing for 2 months from week 4
-    # w_initial = result['w_opt']
-    # u_sd = [0.0] * int(horizon)
-    # for i in range(21, 81):
-    #     u_sd[i] = 0.4
-    # result = sm.casadi_model(u_fixed=True,
-    #                          u_profile=u_sd,
-    #                          w_initial=w_initial,
-    #                          objective_selector=0)
-    # fig = sm.plot_results(result)
-    # fig.suptitle('Social distancing for 2 months starting from week 4')
-    # plt.show()
-
-    # optimal social distancing effectiveness
-    # sm.u_max = 0.5
-    # result = sm.casadi_model(u_fixed=False,
-    #                          u_profile=None,
-    #                          w_initial=None,
-    #                          objective_selector=2,
-    #                          u_start_day=14)
-    # fig = sm.plot_results(result)
-    # fig.suptitle('Open loop optimal social distancing effectiveness (u)')
-
-    # optimal social distancing effectiveness
-    # sm.u_max = 0.4
-    # result = sm.casadi_model(u_fixed=False,
-    #                          u_profile=None,
-    #                          w_initial=None,
-    #                          objective_selector=2,
-    #                          u_start_day=14,
-    #                          increasing_capacity=(50, 60))
-    # fig = sm.plot_results(result)
-    # fig.suptitle(
-    #     'Open loop optimal social distancing effectiveness (u), with delayed start'
-    # )
-    # plt.show()
-
-    # closed loop MPC
-    sm = SeirModel(horizon=horizon, n=100)
-    sm.u_max = 0.4
-    sim_result = sm.mpc(u_start_day=14)
-    fig = sm.plot_results(sim_result)
-    fig.suptitle(
-        'MPC feedback control with fixed ICU peak bed capacity constraint'
-    )
-
-    # sm = SeirModel(horizon=horizon, n=100)
-    # sim_result = sm.mpc(u_start_day=7, increasing_capacity=(50, 60))
-    # fig = sm.plot_results(sim_result)
-    # fig.suptitle(
-    #     'MPC feedback control with increasing ICU peak bed capacity constraint'
-    # )
-    plt.show()
